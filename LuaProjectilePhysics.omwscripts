@@ -1,0 +1,6 @@
+GLOBAL: scripts/ProjectilePhysics/ProjectilePhysicsGlobal.lua
+PLAYER: scripts/ProjectilePhysics/ProjectilePhysicsPlayer.lua
+PLAYER: scripts/ProjectilePhysics/ProjectilePhysicsSettings.lua
+NPC, CREATURE, PLAYER: scripts/ProjectilePhysics/ProjectilePhysicsActor.lua
+WEAPON: scripts/ProjectilePhysics/projectilephysicslocal.lua
+ACTIVATOR: scripts/ProjectilePhysics/Activator.lua
