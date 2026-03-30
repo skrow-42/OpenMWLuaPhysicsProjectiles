@@ -1020,7 +1020,7 @@ local function firePhysicsProjectile()
         local dist = (target.position - self.position):length()
         if passiveWeaponType == 'thrown' then
             -- [CRITICAL] Increased bias to ensure shots don't land at feet
-            local verticalBias = 25 + (dist * 0.25) 
+            local verticalBias = 5 + (dist * 0.20) 
             aimTargetOffset = util.vector3(0, 0, verticalBias)
         elseif passiveWeaponType == 'arrow' then
             -- [USER REQUEST] Standard bias for reliability
@@ -1215,9 +1215,12 @@ local function onTextKey(group, key)
         end
         
         if anim and anim.cancel then
-            anim.cancel(self, group)
-            debugLog('ACTOR FAKERELEASE - anim.cancel() executed')
-            debugLog('Fake release intercepted. Animation canceled for ' .. groupL)
+            -- [FIX] Do NOT cancel thrown weapons early, or the animation might freeze
+            if groupL ~= 'throwweapon' then
+                anim.cancel(self, group)
+                debugLog('ACTOR FAKERELEASE - anim.cancel() executed')
+                debugLog('Fake release intercepted. Animation canceled for ' .. groupL)
+            end
         end
         
         if passiveAttackActive then
@@ -3657,8 +3660,10 @@ end
 
 
 local function onUpdate(dt)
-    -- =========================================================================
-    -- [USER REQUEST] OPTIMIZATION: Early returns and throttled checks
+    -- [USER REQUEST] EXCLUDE PLAYER from actor script processing
+    -- Running NPC logic on the player causes control/animation interference.
+    if self.type == types.Player then return end
+
     -- =========================================================================
     
     -- 1. [DISTANCE SKIP] If actor is outside processing range, stop immediately.

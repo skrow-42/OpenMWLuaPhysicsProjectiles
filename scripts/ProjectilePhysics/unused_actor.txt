@@ -1,0 +1,21 @@
+At line:1 char:310
++ ... else { .Groups[2].Value } } | 
+Select-Object -Unique; foreach( in )
+{   ...
++                                   
+                               ~
+Missing variable name after foreach.
+At line:1 char:314
++ ... { .Groups[2].Value } } | Selec
+t-Object -Unique; foreach( in ){  = 
+[re ...
++                                   
+                              ~
+Unexpected token ')' in expression o
+r statement.
+    + CategoryInfo          : Parse 
+   rError: (:) [], ParentContainsE  
+  rrorRecordException
+    + FullyQualifiedErrorId : Missi 
+   ngVariableNameAfterForeach
+ 

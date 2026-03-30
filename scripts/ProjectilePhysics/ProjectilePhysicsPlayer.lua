@@ -82,6 +82,7 @@ local passiveWasReleased = false -- For tap detection during spam
 local passiveProcessedMinHit = {} -- For blending safety
 local passiveShootSoundPlayed = {}
 local passivePullSoundPlayed = {}
+local passiveIsReadying = false
 local holdReleaseBuffer = 0     -- For sticky hold release
 local lastLaunchTime = 0
 local passiveAnimReady = true   -- [COOLDOWN] False while animation is playing, true when ready
@@ -701,6 +702,8 @@ local function resetAttackState()
     if passiveAmmoHidden then
         restoreAmmoAfterShot()
     end
+    passiveIsUnequipping = false
+    passiveIsReadying = false
     passiveAttackActive = false
     passiveHoldActive = false
 end
@@ -718,12 +721,7 @@ local function onTextKey(group, key)
     if lGroup ~= 'bowandarrow' and lGroup ~= 'crossbow' and lGroup ~= 'throwweapon' then return end
 
     if lKey == 'fakerelease' or lKey == 'shoot fakerelease' then
-        -- [FIX 3] Suppress any fire during unequip animation or manual stance drop
-        if passiveIsUnequipping or types.Actor.getStance(self) ~= 1 then
-            debugLog('Fakerelease suppressed: unequip in progress or stance unready.')
-            passiveAttackActive = false
-            return
-        end
+        if passiveIsReadying then return end
         debugLog('PLAYER FAKERELEASE TRIGGERED. Group: ' .. tostring(lGroup))
         
         -- Play correct sound based on weapon type
@@ -749,15 +747,12 @@ local function onTextKey(group, key)
                  wasHidden = true
              end
              
-             -- [ANIMATION BLENDING] Play follow-through bypassing native fakerelease
-             -- [USER REQUEST] Do absolutely nothing more after fake release for thrown weapons
-             if anim and anim.playBlended and lGroup ~= 'throwweapon' then
+             -- [ANIMATION BLENDING] Play the follow-through sequence so the arm/bow lowers naturally
+             if anim and anim.playBlended then
                  pcall(function()
-                     local sKey = 'shoot follow start'
-                     local eKey = 'shoot follow stop'
                      anim.playBlended(self, group, {
-                         startKey = sKey,
-                         stopKey  = eKey,
+                         startKey = 'shoot follow start',
+                         stopKey  = 'shoot follow stop',
                          priority = anim.PRIORITY.Default,
                          loops    = 1,
                          autoblend = true,
@@ -785,27 +780,21 @@ local function onTextKey(group, key)
              passiveDidFire[passiveGeneration] = true
              lastLaunchTime = now
              scanLeaksTimer = 1.0
-
-             -- Cancel vanilla animation (redundant but safe)
-             if anim and anim.cancel then
-                 anim.cancel(self, group)
-             end
-
-             -- Immediate restore since the text key has passed and playBlended is removed.
-             -- Prevents the weapon from staying stuck hidden indefinitely since shoot follow stop is skipped.
+             
+             -- [CAUTION] Restore immediately to avoid breaking subsequent shots or other mods
              if wasHidden then
                  restoreAmmoAfterShot()
              end
-
              debugLog(passiveWeaponType .. ': Physic fire complete (Suppressed & Restored)')
         end
         return
     end
 
     if lKey == 'shoot start' then
+        if passiveIsReadying then return end
         -- [FIX 3] Block shot if we are in the middle of an unequip animation
         if passiveIsUnequipping then
-            debugLog('Shoot start suppressed: unequип animation in progress.')
+            debugLog('Shoot start suppressed: unequip animation in progress.')
             return
         end
         -- [DYNAMIC COOLDOWN] Block new shots until the previous animation is fully done.
@@ -922,35 +911,32 @@ local function onTextKey(group, key)
         end
     elseif lKey == 'shoot release' then
         debugLog('PLAYER SHOOT RELEASE TRIGGERED. Active: ' .. tostring(passiveAttackActive) .. ', Fired: ' .. tostring(passiveDidFire[passiveGeneration]))
-        
-        -- [CRITICAL FIX] ALWAYS cancel native shoot release for thrown weapons!!
-        -- If an animation reaches shoot release, we MUST cancel it to prevent the vanilla double.
-        if passiveWeaponType == 'thrown' and anim and anim.cancel then
-             anim.cancel(self, group)
-        end
-
-        -- Suppress during unequip animation or manual stance unreadying
-        if passiveIsUnequipping or types.Actor.getStance(self) ~= 1 then
-            debugLog('Shoot release suppressed: unequip in progress or stance unready.')
-            passiveAttackActive = false
-            return
-        end
         if passiveAttackActive and not passiveDidFire[passiveGeneration] then
-             -- Native vanilla text key reached (e.g., max charge release).
-             debugLog('PLAYER SHOOT RELEASE - Forwarding to fakerelease logic')
-             onTextKey(group, 'fakerelease')
+             -- [USER REQUEST] For thrown weapons, we ONLY fire on fakerelease key.
+             -- Bows and Crossbows still use shoot release as a fallback/forward.
+             if passiveWeaponType ~= 'thrown' then
+                 -- [USER REQUEST] Cancel vanilla animation to prevent double-projectile from base engine
+                 if anim and anim.cancel then
+                     anim.cancel(self, group)
+                     debugLog('PLAYER SHOOT RELEASE - anim.cancel() executed to act as fakerelease')
+                 end
+     
+                 debugLog('PLAYER SHOOT RELEASE - Forwarding to fakerelease logic')
+                 onTextKey(group, 'fakerelease')
+             else
+                 debugLog('PLAYER SHOOT RELEASE - Ignored for Thrown (Waiting for fakerelease key)')
+             end
         end
         
-    elseif lKey == 'unequip start' then
-        local now = core.getRealTime()
-        if passiveWeaponType == 'thrown' and (now - (passiveAttackStartTime or 0) < 0.1) then
-            debugLog('Unequip started — ignored for thrown weapon (animation anomaly at attack start).')
-        else
-            passiveIsUnequipping = true
-            debugLog('Unequip started — shot suppression active.')
-        end
-    elseif lKey == 'shoot follow stop' or lKey == 'unequip stop' then
+    elseif lKey == 'unequip start' or lKey == 'equip start' then
+        -- [CLEANUP] If we unequip or ready at any point, immediately reset attack state 
+        -- so it doesn't linger until the next readying.
+        resetAttackState()
+        if lKey == 'equip start' then passiveIsReadying = true end
+        debugLog(lKey .. ' — attack state reset.')
+    elseif lKey == 'shoot follow stop' or lKey == 'unequip stop' or lKey == 'equip stop' then
         passiveIsUnequipping = false
+        passiveIsReadying = false
         if passiveAttackActive or passiveHoldActive or passiveAmmoHidden then
              -- [REVISION 27] Natural Recovery
              -- Restore ammo and clear flags ONLY after animation is fully finished.
@@ -996,21 +982,35 @@ local function onFrame(dt)
     
 
 
-            -- [REVISION 32] Crossbow Hold Release + Bow Early Intercept
+    -- [REVISION 34] Real-time Unequip Detection
+    -- If the weapon is no longer equipped while we are in an attack state,
+    -- clean up immediately to prevent ghost-firing or stuck states.
+    if passiveAttackActive and not passiveIsUnequipping then
+        local equip = types.Actor.getEquipment(self)
+        local wpn = equip[types.Actor.EQUIPMENT_SLOT.CarriedRight]
+        if not wpn or wpn.recordId ~= (passiveWeaponItem and passiveWeaponItem.recordId) then
+             debugLog('Mid-attack unequip detected — cleaning up.')
+             passiveIsUnequipping = false  -- [CORRECT] Must be false for the next attack to start
+             resetAttackState()
+             passiveAnimReady = true
+        end
+    end
+
+    -- [REVISION 32] Crossbow Hold Release + Bow Early Intercept
     -- Responding faster (0.1s buffer) and tracking release state for spam-bypass.
-    if passiveAttackActive and not input.isActionPressed(input.ACTION.Use) then
+    if passiveAttackActive and not passiveIsReadying and not input.isActionPressed(input.ACTION.Use) then
         if not passiveWasReleased then
             passiveWasReleased = true
             
-            -- [USER REQUEST] Enforce minimum draw time for bows/thrown.
-            -- If released too early, schedule fakerelease to fire after the remaining draw time
-            if passiveWeaponType == 'arrow' or passiveWeaponType == 'thrown' then
+            -- [USER REQUEST] Thrown weapons ONLY fire via fakerelease key.
+            -- Scheduling is disabled for thrown to ensure frame-perfect sync with anim.
+            if passiveWeaponType == 'arrow' then
                 local currentGen = passiveGeneration
-                local wpnGroup = passiveWeaponType == 'arrow' and 'bowandarrow' or 'throwweapon'
+                local wpnGroup = 'bowandarrow'
                 
                 local now = core.getRealTime()
                 local elapsed = now - (passiveAttackStartTime or now)
-                local timings = WEAPON_TIMINGS[passiveWeaponType] or WEAPON_TIMINGS.arrow
+                local timings = WEAPON_TIMINGS.arrow
                 local remaining = timings.minAttackTime - elapsed
                 
                 if remaining <= 0 then
@@ -1028,6 +1028,8 @@ local function onFrame(dt)
                         end
                     end)
                 end
+            elseif passiveWeaponType == 'thrown' then
+                debugLog('PLAYER onFrame early release - Thrown weapon waiting for native fakerelease key')
             end
         end
     end
